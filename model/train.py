@@ -172,7 +172,7 @@ def build_trainer(model, tokenized_dataset, tokenizer) -> Trainer:
         args=training_args,
         train_dataset=tokenized_dataset["train"],
         eval_dataset=tokenized_dataset["val"],
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
