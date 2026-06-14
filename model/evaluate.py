@@ -103,17 +103,26 @@ def get_attention_weights(model, tokenizer, sentence: str):
         padding=False,
     ).to(model.device)
 
-    # sdpa attention does not support output_attentions → switch to eager temporarily
-    original_attn = model.config._attn_implementation
-    model.config._attn_implementation = "eager"
+    # PeftModel wraps the base model: PeftModel → LoraModel → LlamaForSequenceClassification
+    # Need to set eager on the innermost model's config
+    inner_model = model
+    while hasattr(inner_model, "base_model"):
+        inner_model = inner_model.base_model
+    if hasattr(inner_model, "model"):
+        inner_model = inner_model.model
+
+    original_attn = getattr(inner_model.config, "_attn_implementation", "sdpa")
+    inner_model.config._attn_implementation = "eager"
 
     with torch.no_grad():
         outputs = model(**inputs, output_attentions=True)
 
-    model.config._attn_implementation = original_attn  # restore
+    inner_model.config._attn_implementation = original_attn  # restore
 
     # outputs.attentions: tuple of (num_layers,)
     # each layer: (batch=1, num_heads, seq_len, seq_len)
+    if not outputs.attentions:
+        raise ValueError("Model did not return attention weights. Try model.eval() first.")
     last_layer_attn = outputs.attentions[-1]            # last layer
     avg_heads       = last_layer_attn[0].mean(dim=0)    # average over heads → (seq, seq)
     attn_matrix     = avg_heads.cpu().numpy()
