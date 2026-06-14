@@ -4,18 +4,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ─────────────────────────────────────────────
 # Environment Detection
+# ─────────────────────────────────────────────
 
 IS_COLAB = "COLAB_GPU" in os.environ
 
-
+# ─────────────────────────────────────────────
 # API Keys
+# ─────────────────────────────────────────────
 
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 HF_TOKEN         = os.environ.get("HF_TOKEN")
 
+# ─────────────────────────────────────────────
 # Paths
-
+# ─────────────────────────────────────────────
 
 DRIVE_DIR  = "/content/drive/MyDrive/financial-llm"
 OUTPUT_DIR = os.path.join(DRIVE_DIR, "saved_model") if IS_COLAB else "./saved_model"
@@ -30,8 +34,8 @@ BASE_MODEL = "meta-llama/Llama-2-7b-hf"
 NUM_LABELS = 3
 MAX_LENGTH = 256
 
-LABEL2ID = {"negative": 0, "neutral": 1, "positive": 2}
-ID2LABEL  = {0: "negative", 1: "neutral", 2: "positive"}
+LABEL2ID = {"bearish": 0, "bullish": 1, "neutral": 2}
+ID2LABEL  = {0: "bearish", 1: "bullish", 2: "neutral"}
 
 # ─────────────────────────────────────────────
 # LoRA

@@ -11,37 +11,27 @@ from config import (
     SEED,
 )
 
+# ─────────────────────────────────────────────
+# Dataset info
+# ─────────────────────────────────────────────
+# zeroshot/twitter-financial-news-sentiment
+# Columns: "text", "label"
+# Labels:  0 = Bearish (negative)
+#          1 = Bullish (positive)
+#          2 = Neutral
+# Size:    ~11,000 samples
+# ─────────────────────────────────────────────
+
 
 # ─────────────────────────────────────────────
 # 1. Load raw dataset
 # ─────────────────────────────────────────────
 
 def load_raw_data() -> Dataset:
-    """
-    Load the Financial Phrasebank dataset from HuggingFace.
+    print("[Data] Loading twitter-financial-news-sentiment...")
 
-    Subset: sentences_allagree
-      → Only sentences where ALL annotators agreed on the label
-      → Highest quality labels (~4840 samples)
-
-    Labels:
-      0 = negative
-      1 = neutral
-      2 = positive
-
-    Returns:
-        Dataset with columns: ["sentence", "label"]
-    """
-    print("[Data] Loading Financial Phrasebank (sentences_allagree)...")
-
-    dataset = load_dataset(
-        "takala/financial_phrasebank",
-        "sentences_allagree",
-        trust_remote_code=True,
-    )
-
-    # Dataset only has a "train" split — we split manually later
-    data = dataset["train"]
+    dataset = load_dataset("zeroshot/twitter-financial-news-sentiment")
+    data    = dataset["train"]
 
     print(f"[Data] Total samples: {len(data)}")
     print(f"[Data] Columns: {data.column_names}")
@@ -61,26 +51,8 @@ def load_raw_data() -> Dataset:
 # ─────────────────────────────────────────────
 
 def split_data(data: Dataset) -> DatasetDict:
-    """
-    Split the dataset into train (80%), val (10%), test (10%).
+    print("[Data] Splitting: 80% train / 10% val / 10% test...")
 
-    Strategy:
-      Step 1: Split into train 80% and temp 20%
-      Step 2: Split temp into val 50% and test 50%
-      → Final: train 80% / val 10% / test 10%
-
-    Uses stratified split (stratify_by_column="label") to ensure
-    each split has the same class distribution as the full dataset.
-
-    Args:
-        data: raw Dataset from load_raw_data()
-
-    Returns:
-        DatasetDict with keys: "train", "val", "test"
-    """
-    print("[Data] Splitting dataset: 80% train / 10% val / 10% test...")
-
-    # Step 1: 80% train, 20% temp
     split_1 = data.train_test_split(
         test_size=0.2,
         seed=SEED,
@@ -89,7 +61,6 @@ def split_data(data: Dataset) -> DatasetDict:
     train = split_1["train"]
     temp  = split_1["test"]
 
-    # Step 2: temp → 50% val, 50% test
     split_2 = temp.train_test_split(
         test_size=0.5,
         seed=SEED,
@@ -98,11 +69,7 @@ def split_data(data: Dataset) -> DatasetDict:
     val  = split_2["train"]
     test = split_2["test"]
 
-    dataset_dict = DatasetDict({
-        "train": train,
-        "val":   val,
-        "test":  test,
-    })
+    dataset_dict = DatasetDict({"train": train, "val": val, "test": test})
 
     print(f"[Data] Train: {len(train)} | Val: {len(val)} | Test: {len(test)}")
 
@@ -114,21 +81,6 @@ def split_data(data: Dataset) -> DatasetDict:
 # ─────────────────────────────────────────────
 
 def build_tokenizer() -> AutoTokenizer:
-    """
-    Load the LLaMA tokenizer and apply required fixes.
-
-    Fixes applied:
-      1. pad_token = eos_token
-         LLaMA has no padding token by default → causes error during batching
-         Setting pad_token to eos_token is the standard workaround
-
-      2. padding_side = "right"
-         Pad on the right so the real tokens come first
-         Required for sequence classification (reads last non-pad token)
-
-    Returns:
-        AutoTokenizer configured for LLaMA classification
-    """
     print(f"[Tokenizer] Loading from: {BASE_MODEL}")
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -136,34 +88,28 @@ def build_tokenizer() -> AutoTokenizer:
         token=HF_TOKEN,
     )
 
-    # Fix 1: LLaMA has no pad token
     tokenizer.pad_token    = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    # Fix 2: Pad on the right for classification
     tokenizer.padding_side = "right"
 
-    print(f"[Tokenizer] Vocab size:     {tokenizer.vocab_size}")
-    print(f"[Tokenizer] pad_token:      {tokenizer.pad_token} (id={tokenizer.pad_token_id})")
-    print(f"[Tokenizer] padding_side:   {tokenizer.padding_side}")
+    print(f"[Tokenizer] Vocab size:   {tokenizer.vocab_size}")
+    print(f"[Tokenizer] pad_token:    {tokenizer.pad_token} (id={tokenizer.pad_token_id})")
 
     return tokenizer
 
 
 # ─────────────────────────────────────────────
-# 4. Tokenize function (applied per batch)
+# 4. Tokenize function
 # ─────────────────────────────────────────────
 
 def make_tokenize_fn(tokenizer: AutoTokenizer):
-
     def tokenize_fn(examples: dict) -> dict:
         tokenized = tokenizer(
-            examples["sentence"],
+            examples["text"],           # ← "text" column (not "sentence")
             truncation=True,
             padding="max_length",
             max_length=MAX_LENGTH,
         )
-        # Keep the original integer label as classification target
         tokenized["labels"] = examples["label"]
         return tokenized
 
@@ -171,25 +117,10 @@ def make_tokenize_fn(tokenizer: AutoTokenizer):
 
 
 # ─────────────────────────────────────────────
-# 5. Apply tokenization to full dataset
+# 5. Apply tokenization
 # ─────────────────────────────────────────────
 
 def tokenize_dataset(dataset_dict: DatasetDict, tokenizer: AutoTokenizer) -> DatasetDict:
-    """
-    Apply tokenization to all splits in parallel using dataset.map().
-
-    Steps:
-      1. Apply tokenize_fn to each split with batched=True (faster)
-      2. Remove the "sentence" column (model does not need raw text)
-      3. Set format to "torch" so __getitem__ returns tensors directly
-
-    Args:
-        dataset_dict: DatasetDict from split_data()
-        tokenizer:    configured AutoTokenizer
-
-    Returns:
-        Tokenized DatasetDict ready for Trainer
-    """
     print("[Data] Tokenizing dataset...")
 
     tokenize_fn = make_tokenize_fn(tokenizer)
@@ -197,16 +128,13 @@ def tokenize_dataset(dataset_dict: DatasetDict, tokenizer: AutoTokenizer) -> Dat
     tokenized = dataset_dict.map(
         tokenize_fn,
         batched=True,
-        remove_columns=["sentence"],   # raw text no longer needed
+        remove_columns=["text"],        # ← remove "text" column
         desc="Tokenizing",
     )
 
-    # Return tensors instead of lists when indexing
     tokenized.set_format("torch")
 
-    print(f"[Data] Tokenization complete.")
-    print(f"[Data] Sample keys: {list(tokenized['train'][0].keys())}")
-    print(f"[Data] input_ids shape: {tokenized['train'][0]['input_ids'].shape}")
+    print(f"[Data] Done. Sample keys: {list(tokenized['train'][0].keys())}")
 
     return tokenized
 
@@ -216,22 +144,7 @@ def tokenize_dataset(dataset_dict: DatasetDict, tokenizer: AutoTokenizer) -> Dat
 # ─────────────────────────────────────────────
 
 def get_sentences_for_rag(data: Dataset) -> list[str]:
-    """
-    Extract the raw sentence strings from the full dataset.
-    These are passed to pinecone_utils.index_documents() to build
-    the RAG knowledge base.
-
-    We use ALL sentences (not just train) because the RAG knowledge
-    base is separate from the training process — it is a retrieval
-    corpus, not a training set.
-
-    Args:
-        data: raw Dataset from load_raw_data()
-
-    Returns:
-        list of sentence strings
-    """
-    sentences = data["sentence"]
+    sentences = data["text"]            # ← "text" column
     print(f"[RAG] Extracted {len(sentences)} sentences for Pinecone indexing.")
     return sentences
 
@@ -241,21 +154,6 @@ def get_sentences_for_rag(data: Dataset) -> list[str]:
 # ─────────────────────────────────────────────
 
 def prepare_dataset():
-    """
-    Full data preparation pipeline in one call.
-
-    Steps:
-      1. Load raw Financial Phrasebank dataset
-      2. Split into train / val / test
-      3. Build tokenizer
-      4. Tokenize all splits
-      5. Extract raw sentences for RAG
-
-    Returns:
-        tokenized_dataset : DatasetDict  → pass to model/train.py
-        tokenizer         : AutoTokenizer → pass to model/train.py
-        rag_sentences     : list[str]    → pass to rag/pinecone_utils.py
-    """
     raw_data          = load_raw_data()
     dataset_dict      = split_data(raw_data)
     tokenizer         = build_tokenizer()
