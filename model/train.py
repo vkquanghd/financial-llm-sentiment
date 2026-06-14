@@ -150,7 +150,7 @@ def build_trainer(model, tokenized_dataset, tokenizer) -> Trainer:
         optim="paged_adamw_8bit",
 
         # Evaluation & saving
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
         load_best_model_at_end=True,
