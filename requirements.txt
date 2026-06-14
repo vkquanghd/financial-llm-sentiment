@@ -23,6 +23,7 @@ seaborn>=0.12.0
 
 # App
 gradio>=4.0.0
+streamlit>=1.32.0
 
 # Utils
 python-dotenv>=1.0.0
