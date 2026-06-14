@@ -94,42 +94,41 @@ def plot_confusion_matrix(labels, preds, save_path: str = f"{OUTPUT_DIR}/confusi
 # 3. Attention heatmap
 # ─────────────────────────────────────────────
 
-def get_attention_weights(model, tokenizer, sentence: str):
+def get_token_scores(model, tokenizer, sentence: str):
+    # 4-bit quantized + LoRA models do not support output_attentions.
+    # Use gradient-based token importance instead:
+    # score(token_i) = ||∂L/∂embedding_i|| (gradient norm of each token embedding)
     inputs = tokenizer(
         sentence,
         return_tensors="pt",
         truncation=True,
-        max_length=64,          # short sentence for readable heatmap
+        max_length=64,
         padding=False,
     ).to(model.device)
 
-    # PeftModel wraps the base model: PeftModel → LoraModel → LlamaForSequenceClassification
-    # Need to set eager on the innermost model's config
-    inner_model = model
-    while hasattr(inner_model, "base_model"):
-        inner_model = inner_model.base_model
-    if hasattr(inner_model, "model"):
-        inner_model = inner_model.model
+    model.eval()
 
-    original_attn = getattr(inner_model.config, "_attn_implementation", "sdpa")
-    inner_model.config._attn_implementation = "eager"
+    # Get embeddings with gradient tracking
+    embed_layer = model.base_model.model.model.embed_tokens
+    input_ids   = inputs["input_ids"]
+    embeds      = embed_layer(input_ids)          # [1, seq, hidden]
+    embeds.retain_grad()
 
-    with torch.no_grad():
-        outputs = model(**inputs, output_attentions=True)
+    outputs = model(inputs_embeds=embeds, attention_mask=inputs["attention_mask"])
+    logits  = outputs.logits                      # [1, num_labels]
 
-    inner_model.config._attn_implementation = original_attn  # restore
+    # Backprop through the predicted class score
+    pred_class = logits.argmax(dim=-1)
+    logits[0, pred_class].backward()
 
-    # outputs.attentions: tuple of (num_layers,)
-    # each layer: (batch=1, num_heads, seq_len, seq_len)
-    if not outputs.attentions:
-        raise ValueError("Model did not return attention weights. Try model.eval() first.")
-    last_layer_attn = outputs.attentions[-1]            # last layer
-    avg_heads       = last_layer_attn[0].mean(dim=0)    # average over heads → (seq, seq)
-    attn_matrix     = avg_heads.cpu().numpy()
+    # Gradient norm per token → importance score
+    grad        = embeds.grad[0]                  # [seq, hidden]
+    scores      = grad.norm(dim=-1).cpu().detach().numpy()   # [seq]
+    scores      = scores / (scores.max() + 1e-8)  # normalize to [0, 1]
 
-    tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
 
-    return attn_matrix, tokens
+    return scores, tokens
 
 
 def plot_attention_heatmap(
@@ -138,22 +137,28 @@ def plot_attention_heatmap(
     tokenizer,
     save_path: str = f"{OUTPUT_DIR}/attention_heatmap.png",
 ):
-    attn_matrix, tokens = get_attention_weights(model, tokenizer, sentence)
+    # Note: renamed internally to token importance (4-bit models don't support attention output)
+    scores, tokens = get_token_scores(model, tokenizer, sentence)
 
-    fig, ax = plt.subplots(figsize=(10, 8))
-    im = ax.imshow(attn_matrix, cmap="Blues")
+    fig, ax = plt.subplots(figsize=(max(8, len(tokens) * 0.6), 2.5))
+
+    # Bar chart: one bar per token, height = importance score
+    bars = ax.bar(range(len(tokens)), scores, color="steelblue")
+
+    # Color the most important token
+    max_idx = scores.argmax()
+    bars[max_idx].set_color("tomato")
 
     ax.set_xticks(range(len(tokens)))
-    ax.set_yticks(range(len(tokens)))
-    ax.set_xticklabels(tokens, rotation=45, ha="right", fontsize=8)
-    ax.set_yticklabels(tokens, fontsize=8)
+    ax.set_xticklabels(tokens, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel("Gradient-based Importance")
+    ax.set_ylim(0, 1.1)
+    ax.set_title(f"Token Importance\n\"{sentence[:70]}\"")
 
-    plt.colorbar(im, ax=ax)
-    plt.title(f"Attention Heatmap\n\"{sentence[:60]}\"")
     plt.tight_layout()
     plt.savefig(save_path)
     plt.show()
-    print(f"[Evaluate] Attention heatmap saved to: {save_path}")
+    print(f"[Evaluate] Token importance chart saved to: {save_path}")
 
 
 # ─────────────────────────────────────────────
