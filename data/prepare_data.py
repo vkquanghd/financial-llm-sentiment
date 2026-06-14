@@ -56,7 +56,6 @@ def split_data(data: Dataset) -> DatasetDict:
     split_1 = data.train_test_split(
         test_size=0.2,
         seed=SEED,
-        stratify_by_column="label",
     )
     train = split_1["train"]
     temp  = split_1["test"]
@@ -64,7 +63,6 @@ def split_data(data: Dataset) -> DatasetDict:
     split_2 = temp.train_test_split(
         test_size=0.5,
         seed=SEED,
-        stratify_by_column="label",
     )
     val  = split_2["train"]
     test = split_2["test"]
