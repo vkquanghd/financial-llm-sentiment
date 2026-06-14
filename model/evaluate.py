@@ -103,8 +103,14 @@ def get_attention_weights(model, tokenizer, sentence: str):
         padding=False,
     ).to(model.device)
 
+    # sdpa attention does not support output_attentions → switch to eager temporarily
+    original_attn = model.config._attn_implementation
+    model.config._attn_implementation = "eager"
+
     with torch.no_grad():
         outputs = model(**inputs, output_attentions=True)
+
+    model.config._attn_implementation = original_attn  # restore
 
     # outputs.attentions: tuple of (num_layers,)
     # each layer: (batch=1, num_heads, seq_len, seq_len)
